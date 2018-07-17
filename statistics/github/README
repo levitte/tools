@@ -1,0 +1,38 @@
+Github statistics gathering
+===========================
+
+There are two scripts:
+
+contributor-collect	- Collects data from github.  To be used carefully and
+			  not too often, as it pulls ALL PRs and ALL reviews
+			  made in them, as well as ALL issues and ALL comments
+			  made in those.  Its result is written to standard
+			  output.
+
+contributor-check	- Uses cached data from contributor-collect to present
+			  statistics over a date range.  Reads the data from
+			  standard input.
+
+Synopsis
+--------
+
+perl contributor-collect owner repo > cachefile
+
+perl contributor-check startdate[YYYYMMDD] enddate[YYYYMMDD] < cachefile
+
+
+Configuration
+-------------
+
+contributor-collect needs configuring with authentication data, either like
+this:
+
+    {
+        authentication => [ access_token => 'XXXXXXXX....' ]
+    }
+
+or like this:
+
+    {
+        authentication => [ login => 'username', pass => 'password' ]
+    }

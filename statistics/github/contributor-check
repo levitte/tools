@@ -1,0 +1,343 @@
+#!/usr/bin/perl
+#
+# Usage:
+#
+# perl contributor-check startdate[YYYYMMDD] enddate[YYYYMMDD] < cachefile
+#
+# e.g.
+#
+# $ perl contributor-check 20170401 20180201 < openssl_openssl.cache
+#
+# or
+#
+# $ perl contributor-check 20170401 20180201 < openssl_openssl-book.cache
+#
+# And this will ouput the stats from 1st Apr 2017 to 1st Feb 2018, for
+# contribution statistics of openssl and openssl-book repos collected
+# with contribution-collect, respectively.
+#
+
+use strict;
+use warnings;
+use OpenSSL::Query::DB;
+use Time::Local;
+use Text::Template;
+use Data::Dumper;
+
+my %data;
+{
+    local $/ = undef;
+    (my $datastr = <STDIN>) =~ s|^\$VAR\d\s*=\s*||;
+    my $data = eval $datastr;
+    %data = %$data;
+}
+
+my $extract_data = sub { return shift; };
+
+$data{version} //= 1;
+if ($data{version} == 2) {
+    if (@ARGV != 2) {
+	die "contributor-check startdate[YYYYMMDD] enddate[YYYYMMDD]";
+    }
+    $data{startdate}  = $ARGV[0];
+    $data{enddate}    = $ARGV[1];
+    $data{startepoch} = time_string_to_epoch($data{startdate});
+    $data{endepoch}   = time_string_to_epoch($data{enddate});
+    $data{weeks}      = 0;
+    $data{startweek}  = undef;
+    $data{endweek}    = undef;
+    $extract_data =
+	sub {
+	    my $x = shift;
+	    my $week_secs = shift
+		? 604800	# The data is valid for a week
+		: 0;		# Only that day counts
+
+	    print "[DEBUG] ", ref($x), ", $week_secs\n";
+	    return 0 unless ref($x) eq 'HASH';
+
+	    # The keys are epochs, to be matched against
+	    # $data{startepoch} and $data{endepoch}
+	    my $sum = 0;
+	    foreach (keys %$x) {
+		if ($_ + $week_secs >= $data{startepoch}
+			&& $_ < $data{endepoch}) {
+		    $sum += $x->{$_};
+
+		    # To calculate the number of weeks covered
+		    if ($week_secs) {
+			# Initialise with this week if uninitialized
+			$data{startweek} //= $_;
+			$data{endweek} //= $_;
+
+			$data{startweek} = $_ if $data{startweek} > $_;
+			$data{endweek} = $_ if $data{endweek} < $_;
+
+			$data{weeks} =
+			    ($data{endweek} - $data{startweek}) / $week_secs
+			    + 1;
+			print "[DEBUG] $_, $data{startweek}, $data{endweek}, $data{weeks}\n";
+		    }
+		}
+	    }
+	    return $sum;
+	};
+}
+
+print "Date period for statstistics: ",
+    "$data{startdate}($data{startepoch}) - $data{enddate}($data{endepoch})\n";
+
+# Committer definitions
+my $omc = $ENV{OMC} // '/var/cache/openssl/checkouts/omc';
+my $query = OpenSSL::Query->new(omc => $omc);
+
+# Every element is an ARRAY reference with the diverse identities for each
+# person, some of which might be a github identity.  We extract the github
+# identities where available, otherwise the @openssl.org addresses, if
+# available.
+my @committers =
+    map { ( ( map { $_->{github} }
+		  grep { ref($_) eq 'HASH' && $_->{github} || () } @$_ ),
+	    grep { ref($_) eq '' && $_ =~ m|\@openssl\.org$| } @$_ )[0] }
+    $query->members_of('commit');
+
+# XXX: change this to 0 to involve committers
+my $strip_committer;
+
+# Standard format to say exactly what repo is used
+my $repo = "$data{owner}-$data{repo}";
+
+my @commits   = ();
+my @additions = ();
+my @deletions = ();
+my @prs       = ();
+my @comments  = ();
+my @reviews   = ();
+my @active    = ();
+sort_stats();
+
+print STDERR "All weeks in given period: $data{weeks}\n"
+    if $data{version} == 2;
+
+# output stuffs...
+my $outfile = "$repo-contrib-stats-$data{startdate}-$data{enddate}.html";
+my $outfile2 = "$repo-contrib-stats-$data{startdate}-$data{enddate}-with-committers.html";
+my $outfile3 = "$repo-contrib-stats-$data{startdate}-$data{enddate}.txt";
+my $outfile4 = "$repo-contrib-stats-$data{startdate}-$data{enddate}-with-committers.txt";
+
+$strip_committer = 1;
+output_sorted_index_html(
+    $outfile, "Contributor Statistics ($data{startdate} - $data{enddate})");
+$strip_committer = 0;
+output_sorted_index_html(
+    $outfile2, "Contributor Statistics with Committer($data{startdate} - $data{enddate})");
+$strip_committer = 1;
+output_sorted_index_text(
+    $outfile3, "Contributor Statistics ($data{startdate} - $data{enddate})");
+$strip_committer = 0;
+output_sorted_index_text(
+    $outfile4, "Contributor Statistics with Committer($data{startdate} - $data{enddate})");
+
+#output_all_stats();
+
+exit 0;
+
+#
+# Subroutines
+#
+
+sub output_all_stats {
+    while (my($k, $v) = each %{$data{stats}}) {
+        my $active_percent =
+	    sprintf("%.2f%%", ($v->{active} / $data{weeks} * 100));
+
+        print "Contributor: $k\n";
+        print "    Commits: $v->{commits}\n";
+        print "    Additions: $v->{additions}\n";
+        print "    Deletions: $v->{deletions}\n";
+        print "    PRs: $v->{prs}\n";
+        print "    Comments: $v->{comments}\n";
+        print "    Reviews: $v->{reviews}\n";
+        print "    Active: $active_percent\n";
+    }
+}
+
+sub sorted_by {
+    my @contributors = keys %{$data{stats}};
+    my $type = shift;
+    my $week = shift;
+
+    return
+	reverse
+	sort { $a->[1] <=> $b->[1] }
+	map { [ $_ => $extract_data->($data{stats}{$_}{$type}, $week) ] }
+	@contributors;
+}
+
+sub sort_stats {
+    @commits = sorted_by('commits', 1);
+    @additions = sorted_by('additions', 1);
+    @deletions = sorted_by('deletions', 1);
+    @prs = sorted_by('prs');
+    @comments = sorted_by('comments');
+    @reviews = sorted_by('reviews');
+    @active = sorted_by('active', 1);
+}
+
+# output_sorted_index
+#
+sub format_sorted_index {
+    my ($index) = @_;
+    my $i = 1;
+    my @lines = ();
+
+    foreach my $t (@{$index}) {
+        my ($k, $v) = @$t;
+
+	if (!defined $k || !defined $v) {
+	    warn "Undefined \$k or \$v\n", Dumper([$k, $v], [qw($k $v)]);
+	    next;
+	}
+
+        # skip committers
+        if ($strip_committer == 1) {
+            if (grep(/^$k$/, @committers)) {
+                next;
+            }
+        }
+
+        # skip zero
+        if ($v != 0) {
+            if ($index == \@active) {
+                my $vp = int($v / $data{weeks} * 100 + 0.5);
+                push @lines, "$i. $k:\t\t$vp%";
+            } else {
+                push @lines, "$i. $k:\t\t$v";
+            }
+        }
+        $i++;
+    }
+
+    return @lines;
+}
+
+sub output_sorted_index_text {
+    my ($filename, $heading) = @_;
+
+    open(my $fh, '>', $filename) or die "Unable to create file for writing";
+
+    print $fh "$heading\n\n";
+
+    print $fh "==== Commmits ====\n";
+    print $fh "$_\n" foreach (format_sorted_index(\@commits));
+    print $fh "==== Additions ====\n";
+    print $fh "$_\n" foreach (format_sorted_index(\@additions));
+    print $fh "==== Deletions ====\n";
+    print $fh "$_\n" foreach (format_sorted_index(\@deletions));
+    print $fh "==== PRs ====\n";
+    print $fh "$_\n" foreach (format_sorted_index(\@prs));
+    print $fh "==== Comments ====\n";
+    print $fh "$_\n" foreach (format_sorted_index(\@comments));
+    print $fh "==== Reviews ====\n";
+    print $fh "$_\n" foreach (format_sorted_index(\@reviews));
+    print $fh "==== Active ====\n";
+    print $fh "$_\n" foreach (format_sorted_index(\@active));
+
+    close $fh;
+}
+
+sub output_sorted_index_html {
+    my ($filename, $heading) = @_;
+
+    open(my $fh, '>', $filename) or die "Unable to create file for writing";
+
+    my $owner = $data{owner};
+    my $repo = $data{repo};
+    my $template = Text::Template->new(DELIMITERS => [ "<#", "#>" ],
+				       TYPE => 'STRING',
+				       SOURCE => <<'_____');
+<html>
+    <title>$heading</title>
+    <body>
+        <h1> <# $heading #> </h1>
+        <h2> Repository: <# "$owner/$repo" #> </h2>
+        <h2> Indexes: </h2>
+        <ul>
+            <li>Commits: How many commits a contributor has made</li>
+            <li>Additions: How many lines of code a contributor has committed</li>
+            <li>Deletions: How many lines of code a contributor has deleted</li>
+            <li>PRs: How many Pull Requests a contributor has made</li>
+            <li>Comments: How many comments (PR comments + PR review comments) a contributor has made</li>
+            <li>Reviews: How many comments (PR comments + PR review comments) of non-author PRs a contributor has made</li>
+            <li>Active: (active weeks / all weeks) in the given time period. Currently only commits are considered as active, should improve to include reviews in the future</li>
+        </ul>
+        <table border=2>
+        <tr>
+           <th>Commits</th>
+           <th>Additions</th>
+           <th>Deletions</th>
+           <th>PRs</th>
+           <th>Comments</th>
+           <th>Reviews</th>
+           <th>Active</th>
+        </tr>
+        <tr>
+            <td style="vertical-align:top">
+              <# join("<br />\n              ",
+                       format_sorted_index(\@commits)); #>
+            </td>
+            <td style="vertical-align:top">
+              <# join("<br />\n              ",
+                      format_sorted_index(\@additions)); #>
+            </td>
+            <td style="vertical-align:top">
+              <# join("<br />\n              ",
+                      format_sorted_index(\@deletions)); #>
+            </td>
+            <td style="vertical-align:top">
+              <# join("<br />\n              ",
+                      format_sorted_index(\@prs)); #>
+            </td>
+            <td style="vertical-align:top">
+              <# join("<br />\n              ",
+                      format_sorted_index(\@comments)); #>
+            </td>
+            <td style="vertical-align:top">
+              <# join("<br />\n              ",
+                      format_sorted_index(\@reviews)); #>
+            </td>
+            <td style="vertical-align:top">
+              <# join("<br />\n              ",
+                      format_sorted_index(\@active)); #>
+            </td>
+        </tr>
+        </table>
+    </body>
+</html>
+_____
+
+    $template->fill_in(OUTPUT => $fh,
+		       HASH => { commits => \@commits,
+				 additions => \@additions,
+				 deletions => \@deletions,
+				 prs => \@prs,
+				 comments => \@comments,
+				 reviews => \@reviews,
+				 active => \@active,
+				 heading => \$heading,
+				 owner => \$owner,
+				 repo => \$repo,
+				 format_sorted_index => \&format_sorted_index
+				});
+    close $fh;
+}
+
+# date must be YYYYMMDD
+sub time_string_to_epoch {
+    my ($date) = @_;
+
+    my $epoch = timegm(0, 0, 0, substr($date, 6, 2), substr($date, 4, 2) - 1,
+        substr($date, 0, 4));
+
+    return $epoch;
+}

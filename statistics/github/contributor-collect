@@ -1,0 +1,254 @@
+#!/usr/bin/perl
+#
+# Usage:
+#
+# perl contributor-collect owner repo > cachefile
+#
+# e.g.
+#
+# $ perl contributor-collect openssl openssl > openssl_openssl.cache
+#
+# or
+#
+# $ perl contributor-collect openssl openssl-book > openssl_openssl-book.cache
+#
+# And this will collect all the stats for openssl and openssl-book repos
+# respectively, and output the collected data to stdout.  This output can
+# then be used as input for contributor-check.
+#
+# This script is used to collect contribution statisitcs for developers in
+# the following indexes (in a specific time period):
+#
+# 1. Number of commits
+# 2. Number of added lines of code
+# 3. Number of deleted lines of code
+# 4. Total PRs (both opened and closed)
+# 5. Total comments and review comments in PR
+# 6. Total comments and review comments in PR (excl. own PR)
+# 7. Percentage of active weeks among the whole period
+#
+# For the period of the statistics, the default one is 1 year, and the minimum
+# scale is 1 week.
+#
+# The first 3 indexes are exactly the ones on Github's contributor page.
+# (But Github only displays the top 100 contributors on the page.)
+#
+# The 4th and the 5th indexes indicate that how many and how active a
+# contributor has launched and pay attention to in a given period.
+#
+# The 6th index indicates how active a contributor is involved in review
+# behaviour.
+#
+# Both comment directly to PR and comments in a review group are considered as
+# the concept 'review'.
+#
+
+use strict;
+use warnings;
+use Net::GitHub::V3;
+use Data::Dumper;
+use Time::Local;
+use File::Basename;
+
+# statistic period
+# fetch the startdate and the enddate first
+if (@ARGV != 2) {
+    die "contributor-collect2 owner repo";
+}
+
+# statistics stuff
+# keys in %stats
+# 1. name
+# 2. commits
+# 3. additions
+# 4. deletions
+# 5. prs
+# 6. comments
+# 7. reviews
+# 8. active
+#
+my %data = (
+    version   => 2,
+    owner     => $ARGV[0],
+    repo      => $ARGV[1],
+    stats     => {},
+);
+
+# Config.  The file us supposed to return a hash of settings
+my $configfile = dirname($0).'/contributor-collect.conf';
+my $config = do $configfile;
+if (!defined $config) {
+    die "$@" if $@;
+    die "$!";
+}
+die "Configuration isn't a hash\n" unless ref($config) eq 'HASH';
+
+# here we go
+# or a token can be used:
+#
+#  access_token => 'xxxxxxxxxxxxx'
+#
+my $gh = Net::GitHub::V3->new(
+    version => 3,
+    # $config->{authentication} must evaluate to one of:
+    # [ user => "username", password => "password" ]
+    # [ access_token => "xxxxxxxxxxxxx" ]
+    @{$config->{authentication}}
+    );
+$gh->set_default_user_repo($data{owner}, $data{repo});
+
+# get all pull requests
+my $pr = $gh->pull_request;
+my $iss = $gh->issue;
+my $rp = $gh->repos;
+
+# collect all PRs
+collect_all_pulls();
+
+# collect all Contributions
+while(!collect_all_contribs()) {
+    # in case sometimes Github data is not ready
+    sleep 5;
+}
+
+# Output the collected stats
+$Data::Dumper::Purity = 1;
+print Dumper(\%data);
+
+exit 0;
+
+#
+# Subroutines
+#
+
+sub collect_all_pulls {
+    print STDERR "Fetching all Pull Requests from GitHub...\n";
+    my @pulls = $pr->pulls({state => 'all'});
+    while ($pr->has_next_page) {
+        # TODO: apply time period to reduce API calls to Github, and save
+        # network traffic...
+        print STDERR ".";
+        push @pulls, $pr->next_page;
+    }
+
+    print STDERR "[", scalar @pulls, "]";
+
+    my $cnt = 0;
+    foreach my $pull (@pulls) {
+        my $contributor = $pull->{user}->{login};
+        my $created_date = $pull->{created_at};
+
+        if ($created_date =~ /(.*)-(.*)-(.*)T.*/) {
+            $created_date = $1 . $2 . $3;
+        }
+
+        $created_date = time_string_to_epoch($created_date);
+
+        $data{stats}{$contributor}{prs}{$created_date} += 1;
+
+        # check for comments in all PRs for the contributor
+        my $pull_id = $pull->{number};
+        my @comments = $iss->comments($pull_id);
+
+        count_reviews(\@comments, $contributor);
+
+        # check for reviews in all PRs for the contributor
+        my @reviews = $pr->comments($pull_id);
+
+        count_reviews(\@reviews, $contributor);
+
+	print STDERR "+" if ++$cnt % 10 == 0;
+    }
+
+    print STDERR "Done\n";
+}
+
+sub collect_all_contribs {
+    print STDERR "Fetching all Contributions from GitHub...\n";
+    my @contrib_stats = $rp->contributor_stats();
+
+    while ($rp->has_next_page) {
+        # TODO: apply time period to reduce API calls to Github, and save
+        # network traffic...
+        print STDERR ".";
+        push @contrib_stats, $rp->next_page;
+    }
+
+    print STDERR "[", scalar @contrib_stats, "]";
+
+    my $cnt = 0;
+    foreach my $contrib (@contrib_stats) {
+        my $contributor = $contrib->{author}->{login};
+
+        my $weeks = $contrib->{weeks};
+
+        foreach my $week (@{$weeks}) {
+            # XXX:
+            # This is not accurate, since the given [start, end] period may not
+            # align to the start and the end of a week.
+            #
+            # Current treatment is if either the startdate or enddate locates
+            # in # the week, count this week as valid.
+            #
+            # This regulation is loose, but at least it works.
+            #
+            my $w_startdate = $week->{w};
+
+            # This is always added
+            $data{stats}{$contributor}{commits}{$week->{w}} += $week->{c}
+		if $week->{c};
+            $data{stats}{$contributor}{additions}{$week->{w}} += $week->{a}
+		 if $week->{a};
+            $data{stats}{$contributor}{deletions}{$week->{w}} += $week->{d}
+		 if $week->{d};
+
+            # count active weeks
+            if ($week->{c} or $week->{a} or $week->{d}) {
+                $data{stats}{$contributor}{active}{$week->{w}} += 1;
+            }
+        }
+	print STDERR "+" if ++$cnt % 10 == 0;
+    }
+
+    print STDERR "Done\n" if scalar @contrib_stats > 0;
+    return scalar @contrib_stats > 0;
+}
+
+sub count_reviews {
+    my ($items, $author) = @_;
+
+    foreach my $item (@{$items}) {
+        my $contributor = $item->{user}->{login};
+        my $created_date = $item->{created_at};
+
+	unless (defined $contributor) {
+	    print STDERR "Undefined contributor in comment:\n";
+	    print STDERR Dumper($item);
+	    next;
+	}
+
+        if ($created_date =~ /(.*)-(.*)-(.*)T.*/) {
+            $created_date = $1 . $2 . $3;
+        }
+
+        $created_date = time_string_to_epoch($created_date);
+
+        # This is always added
+        $data{stats}{$contributor}{comments}{$created_date} += 1;
+
+        # This is added only if the author is not the contributor himself
+        if ($author ne $contributor) {
+            $data{stats}{$contributor}{reviews}{$created_date} += 1;
+        }
+    }
+}
+
+# date must be YYYYMMDD
+sub time_string_to_epoch {
+    my ($date) = @_;
+
+    my $epoch = timegm(0, 0, 0, substr($date, 6, 2), substr($date, 4, 2) - 1,
+        substr($date, 0, 4));
+
+    return $epoch;
+}
