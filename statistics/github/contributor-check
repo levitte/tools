@@ -51,7 +51,7 @@ if ($data{version} == 2) {
     $extract_data =
 	sub {
 	    my $x = shift;
-	    my $week_secs = shift
+	    my $week_secs = shift()
 		? 604800	# The data is valid for a week
 		: 0;		# Only that day counts
 
