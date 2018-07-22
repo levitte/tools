@@ -79,10 +79,7 @@ if (!defined $config) {
 die "Configuration isn't a hash\n" unless ref($config) eq 'HASH';
 
 # here we go
-# or a token can be used:
-#
-#  access_token => 'xxxxxxxxxxxxx'
-#
+
 my $gh = Net::GitHub::V3->new(
     version => 3,
     # $config->{authentication} must evaluate to one of:

@@ -23,6 +23,7 @@ use OpenSSL::Query::DB;
 use Time::Local;
 use Text::Template;
 use Data::Dumper;
+use CGI;
 use JSON;
 
 my $debug = !!$ENV{DEBUG};
@@ -264,7 +265,7 @@ sub output_sorted_index_html {
 				       TYPE => 'STRING',
 				       SOURCE => <<'_____');
 <html>
-    <title>$heading</title>
+    <title><# $heading #></title>
     <body>
         <h1> <# $heading #> </h1>
         <h2> Repository: <# "$owner/$repo" #> </h2>
