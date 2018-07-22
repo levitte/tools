@@ -49,6 +49,7 @@ use Net::GitHub::V3;
 use Data::Dumper;
 use Time::Local;
 use File::Basename;
+use JSON;
 
 # statistic period
 # fetch the startdate and the enddate first
@@ -112,8 +113,7 @@ while(!collect_all_contribs()) {
 }
 
 # Output the collected stats
-$Data::Dumper::Purity = 1;
-print Dumper(\%data);
+print encode_json(\%data);
 
 exit 0;
 

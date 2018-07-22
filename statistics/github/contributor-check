@@ -23,14 +23,15 @@ use OpenSSL::Query::DB;
 use Time::Local;
 use Text::Template;
 use Data::Dumper;
+use JSON;
 
 my $debug = !!$ENV{DEBUG};
 
 my %data;
 {
     local $/ = undef;
-    (my $datastr = <STDIN>) =~ s|^\$VAR\d\s*=\s*||;
-    my $data = eval $datastr;
+    my $datastr = <STDIN>;
+    my $data = decode_json($datastr);
     %data = %$data;
 }
 
