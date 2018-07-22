@@ -51,12 +51,6 @@ use Time::Local;
 use File::Basename;
 use JSON;
 
-# statistic period
-# fetch the startdate and the enddate first
-if (@ARGV != 2) {
-    die "contributor-collect2 owner repo";
-}
-
 # statistics stuff
 # keys in %stats
 # 1. name

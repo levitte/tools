@@ -38,56 +38,58 @@ my %data;
 my $extract_data = sub { return shift; };
 
 $data{version} //= 1;
-if ($data{version} == 2) {
-    if (@ARGV != 2) {
-	die "contributor-check startdate[YYYYMMDD] enddate[YYYYMMDD]";
-    }
-    $data{startdate}  = $ARGV[0];
-    $data{enddate}    = $ARGV[1];
-    $data{startepoch} = time_string_to_epoch($data{startdate});
-    $data{endepoch}   = time_string_to_epoch($data{enddate});
-    $data{weeks}      = 0;
-    $data{startweek}  = undef;
-    $data{endweek}    = undef;
-    $extract_data =
-	sub {
-	    my $x = shift;
-	    my $week_secs = shift()
-		? 604800	# The data is valid for a week
-		: 0;		# Only that day counts
+die "Data format from older contributor-collect not accepted"
+    if $data{version} < 2;
 
-	    print "[DEBUG] ", ref($x), ", $week_secs\n"
-		if $debug;
-	    return 0 unless ref($x) eq 'HASH';
+if (@ARGV != 2) {
+    die "contributor-check startdate[YYYYMMDD] enddate[YYYYMMDD]";
+}
+$data{startdate}  = $ARGV[0];
+$data{enddate}    = $ARGV[1];
+$data{startepoch} = time_string_to_epoch($data{startdate});
+$data{endepoch}   = time_string_to_epoch($data{enddate});
+$data{weeks}      = 0;
+$data{startweek}  = undef;
+$data{endweek}    = undef;
+$extract_data =
+    sub {
+	my $x = shift;
+	my $week_secs = shift()
+	    ? 604800	# The data is valid for a week
+	    : 0;		# Only that day counts
 
-	    # The keys are epochs, to be matched against
-	    # $data{startepoch} and $data{endepoch}
-	    my $sum = 0;
-	    foreach (keys %$x) {
-		if ($_ + $week_secs >= $data{startepoch}
-			&& $_ < $data{endepoch}) {
-		    $sum += $x->{$_};
+	print "[DEBUG] ", ref($x), ", $week_secs\n"
+	    if $debug;
+	return 0 unless ref($x) eq 'HASH';
 
-		    # To calculate the number of weeks covered
-		    if ($week_secs) {
-			# Initialise with this week if uninitialized
-			$data{startweek} //= $_;
-			$data{endweek} //= $_;
+	# The keys are epochs, to be matched against
+	# $data{startepoch} and $data{endepoch}
+	my $sum = 0;
+	foreach (keys %$x) {
+	    if ($_ + $week_secs >= $data{startepoch}
+		    && $_ < $data{endepoch}) {
+		$sum += $x->{$_};
 
-			$data{startweek} = $_ if $data{startweek} > $_;
-			$data{endweek} = $_ if $data{endweek} < $_;
+		# To calculate the number of weeks covered
+		if ($week_secs) {
+		    # Initialise with this week if uninitialized
+		    $data{startweek} //= $_;
+		    $data{endweek} //= $_;
 
-			$data{weeks} =
-			    ($data{endweek} - $data{startweek}) / $week_secs
-			    + 1;
-			print "[DEBUG] $_, $data{startweek}, $data{endweek}, $data{weeks}\n"
-			    if $debug;
-		    }
+		    $data{startweek} = $_ if $data{startweek} > $_;
+		    $data{endweek} = $_ if $data{endweek} < $_;
+
+		    $data{weeks} =
+			($data{endweek} - $data{startweek}) / $week_secs
+			+ 1;
+		    print "[DEBUG] $_, $data{startweek}, $data{endweek}, $data{weeks}\n"
+			if $debug;
 		}
 	    }
-	    return $sum;
-	};
-}
+	}
+	return $sum;
+    };
+
 
 print "Date period for statstistics: ",
     "$data{startdate}($data{startepoch}) - $data{enddate}($data{endepoch})\n";
