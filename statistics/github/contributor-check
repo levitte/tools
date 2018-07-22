@@ -24,6 +24,8 @@ use Time::Local;
 use Text::Template;
 use Data::Dumper;
 
+my $debug = !!$ENV{DEBUG};
+
 my %data;
 {
     local $/ = undef;
@@ -53,7 +55,8 @@ if ($data{version} == 2) {
 		? 604800	# The data is valid for a week
 		: 0;		# Only that day counts
 
-	    print "[DEBUG] ", ref($x), ", $week_secs\n";
+	    print "[DEBUG] ", ref($x), ", $week_secs\n"
+		if $debug;
 	    return 0 unless ref($x) eq 'HASH';
 
 	    # The keys are epochs, to be matched against
@@ -76,7 +79,8 @@ if ($data{version} == 2) {
 			$data{weeks} =
 			    ($data{endweek} - $data{startweek}) / $week_secs
 			    + 1;
-			print "[DEBUG] $_, $data{startweek}, $data{endweek}, $data{weeks}\n";
+			print "[DEBUG] $_, $data{startweek}, $data{endweek}, $data{weeks}\n"
+			    if $debug;
 		    }
 		}
 	    }
